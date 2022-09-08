@@ -90,6 +90,8 @@ py_library(
     name = "federated_context",
     srcs = ["federated_context.py"],
     deps = [
+        ":structure_utils",
+        ":value_reference",
         "//tensorflow_federated/python/common_libs:py_typecheck",
         "//tensorflow_federated/python/core/impl/computation:computation_base",
         "//tensorflow_federated/python/core/impl/context_stack:context_base",
@@ -160,6 +162,7 @@ py_test(
         ":file_release_manager",
         ":file_utils",
         ":program_test_utils",
+        ":release_manager",
         "//tensorflow_federated/python/core/impl/types:computation_types",
     ],
 )
@@ -233,6 +236,7 @@ py_library(
     srcs_version = "PY3",
     deps = [
         ":federated_context",
+        ":structure_utils",
         ":value_reference",
         "//tensorflow_federated/python/common_libs:async_utils",
         "//tensorflow_federated/python/common_libs:py_typecheck",
@@ -253,6 +257,7 @@ py_test(
     deps = [
         ":federated_context",
         ":native_platform",
+        ":value_reference",
         "//tensorflow_federated/python/common_libs:structure",
         "//tensorflow_federated/python/core/backends/native:execution_contexts",
         "//tensorflow_federated/python/core/impl/context_stack:context_stack_impl",
@@ -297,6 +302,10 @@ py_library(
     name = "program_state_manager",
     srcs = ["program_state_manager.py"],
     srcs_version = "PY3",
+    deps = [
+        ":structure_utils",
+        ":value_reference",
+    ],
 )
 
 py_test(
@@ -323,6 +332,8 @@ py_library(
     srcs = ["release_manager.py"],
     srcs_version = "PY3",
     deps = [
+        ":structure_utils",
+        ":value_reference",
         "//tensorflow_federated/python/common_libs:py_typecheck",
         "//tensorflow_federated/python/common_libs:structure",
         "//tensorflow_federated/python/core/impl/types:computation_types",
@@ -386,6 +397,7 @@ py_library(
     srcs = ["value_reference.py"],
     srcs_version = "PY3",
     deps = [
+        ":structure_utils",
         "//tensorflow_federated/python/core/impl/types:computation_types",
         "//tensorflow_federated/python/core/impl/types:typed_object",
     ],

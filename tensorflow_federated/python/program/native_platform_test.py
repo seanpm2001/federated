@@ -14,7 +14,6 @@
 
 import asyncio
 import collections
-from typing import Any
 import unittest
 from unittest import mock
 
@@ -31,9 +30,12 @@ from tensorflow_federated.python.core.impl.types import computation_types
 from tensorflow_federated.python.core.impl.types import placements
 from tensorflow_federated.python.program import federated_context
 from tensorflow_federated.python.program import native_platform
+from tensorflow_federated.python.program import value_reference
 
 
-async def _coro(value: Any) -> Any:
+async def _coro(
+    value: value_reference.MaterializedValue
+) -> value_reference.MaterializedValue:
   return value
 
 
@@ -86,10 +88,10 @@ class AwaitableValueReferenceTest(parameterized.TestCase,
   )
   async def test_get_value_returns_value(self, awaitable, type_signature,
                                          expected_value):
-    value_reference = native_platform.AwaitableValueReference(
+    reference = native_platform.AwaitableValueReference(
         awaitable=awaitable, type_signature=type_signature)
 
-    actual_value = await value_reference.get_value()
+    actual_value = await reference.get_value()
 
     self.assertEqual(actual_value, expected_value)
 

@@ -76,7 +76,7 @@ from tensorflow_federated.python.core.impl.types import type_conversions
 from tensorflow_federated.python.learning.templates import learning_process
 from tensorflow_federated.python.program import data_source as data_source_lib
 from tensorflow_federated.python.program import federated_context
-from tensorflow_federated.python.program import file_program_state_manager
+from tensorflow_federated.python.program import file_program_state_manager  # pytype: disable=pyi-error
 from tensorflow_federated.python.program import release_manager
 from tensorflow_federated.python.program import value_reference
 
