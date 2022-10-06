@@ -18,6 +18,8 @@ from tensorflow_federated.python.core.impl.types import computation_types
 
 def assert_type_assignable_from(target_type, source_type):
   """Asserts that `target_type` is assignable from `source_type`."""
+  if target_type is None and source_type is None:
+    return
   message = None
   try:
     target_type.check_assignable_from(source_type)
@@ -29,6 +31,8 @@ def assert_type_assignable_from(target_type, source_type):
 
 def assert_types_equivalent(first_type, second_type):
   """Asserts that the types are equivalent."""
+  if first_type is None and second_type is None:
+    return
   message = None
   try:
     first_type.check_equivalent_to(second_type)
@@ -40,6 +44,8 @@ def assert_types_equivalent(first_type, second_type):
 
 def assert_types_identical(first_type, second_type):
   """Asserts that the types are identical."""
+  if first_type is None and second_type is None:
+    return
   message = None
   try:
     first_type.check_identical_to(second_type)
