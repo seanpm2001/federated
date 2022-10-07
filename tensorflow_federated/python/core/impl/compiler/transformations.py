@@ -31,9 +31,12 @@ from tensorflow_federated.python.common_libs import py_typecheck
 from tensorflow_federated.python.common_libs import structure
 from tensorflow_federated.python.core.impl.compiler import building_block_factory
 from tensorflow_federated.python.core.impl.compiler import building_blocks
+from tensorflow_federated.python.core.impl.compiler import intrinsic_defs
+from tensorflow_federated.python.core.impl.compiler import transformation_utils
 from tensorflow_federated.python.core.impl.compiler import tree_analysis
 from tensorflow_federated.python.core.impl.compiler import tree_transformations
 from tensorflow_federated.python.core.impl.types import computation_types
+from tensorflow_federated.python.core.impl.types import placements
 
 
 def to_call_dominant(
@@ -189,6 +192,55 @@ def to_call_dominant(
       tree_transformations.remove_unused_block_locals,
   ]:
     comp, _ = transform(comp)
+  return comp
+
+
+def _get_normalized_call_dominant_lambda(
+    comp: building_blocks.Lambda,) -> building_blocks.Lambda:
+  """Create normalized call dominant form for a lambda computation.
+
+  Args:
+    comp: A computation to normalize.
+
+  Returns:
+    A transformed but semantically-equivalent `comp`. The result will be a
+    lambda computation in CDF (call-dominant form) and the result component of
+    the lambda is guaranteed to be a block.
+  """
+  py_typecheck.check_type(comp, building_blocks.Lambda)
+
+  # Flatten `comp` to call-dominant form so that we're working with just a
+  # linear list of intrinsic calls with no indirection via tupling, selection,
+  # blocks, called lambdas, or references.
+  comp = to_call_dominant(comp)
+
+  # CDF can potentially return blocks if there are variables not dependent on
+  # the top-level parameter. We normalize these away.
+  if not comp.is_lambda():
+    comp.check_block()
+    comp.result.check_lambda()
+    if comp.result.result.is_block():
+      additional_locals = comp.result.result.locals
+      result = comp.result.result.result
+    else:
+      additional_locals = []
+      result = comp.result.result
+    # Note: without uniqueness, a local in `comp.locals` could potentially
+    # shadow `comp.result.parameter_name`. However, `to_call_dominant`
+    # above ensure that names are unique, as it ends in a call to
+    # `uniquify_reference_names`.
+    comp = building_blocks.Lambda(
+        comp.result.parameter_name, comp.result.parameter_type,
+        building_blocks.Block(comp.locals + additional_locals, result))
+  comp.check_lambda()
+
+  # Simple computations with no intrinsic calls won't have a block.
+  # Normalize these as well.
+  if not comp.result.is_block():
+    comp = building_blocks.Lambda(comp.parameter_name, comp.parameter_type,
+                                  building_blocks.Block([], comp.result))
+  comp.result.check_block()
+
   return comp
 
 
@@ -529,41 +581,10 @@ def force_align_and_split_by_intrinsics(
     is a `building_blocks.ComputationBuildingBlock` instance that represents a
     part of the result as specified above.
   """
-  py_typecheck.check_type(comp, building_blocks.Lambda)
   py_typecheck.check_type(intrinsic_defaults, list)
   comp_repr = comp.compact_representation()
 
-  # Flatten `comp` to call-dominant form so that we're working with just a
-  # linear list of intrinsic calls with no indirection via tupling, selection,
-  # blocks, called lambdas, or references.
-  comp = to_call_dominant(comp)
-
-  # CDF can potentially return blocks if there are variables not dependent on
-  # the top-level parameter. We normalize these away.
-  if not comp.is_lambda():
-    comp.check_block()
-    comp.result.check_lambda()
-    if comp.result.result.is_block():
-      additional_locals = comp.result.result.locals
-      result = comp.result.result.result
-    else:
-      additional_locals = []
-      result = comp.result.result
-    # Note: without uniqueness, a local in `comp.locals` could potentially
-    # shadow `comp.result.parameter_name`. However, `to_call_dominant`
-    # above ensure that names are unique, as it ends in a call to
-    # `uniquify_reference_names`.
-    comp = building_blocks.Lambda(
-        comp.result.parameter_name, comp.result.parameter_type,
-        building_blocks.Block(comp.locals + additional_locals, result))
-  comp.check_lambda()
-
-  # Simple computations with no intrinsic calls won't have a block.
-  # Normalize these as well.
-  if not comp.result.is_block():
-    comp = building_blocks.Lambda(comp.parameter_name, comp.parameter_type,
-                                  building_blocks.Block([], comp.result))
-  comp.result.check_block()
+  comp = _get_normalized_call_dominant_lambda(comp)
 
   name_generator = building_block_factory.unique_name_generator(comp)
 
@@ -648,3 +669,495 @@ def force_align_and_split_by_intrinsics(
   except tree_analysis.NonuniqueNameError as e:
     raise ValueError(f'nonunique names in result of splitting\n{comp}') from e
   return before, after
+
+
+@attr.s
+class _IntrinsicDependenciesForDivisiveSplit:
+  """Stores properties of computation locals needed to perform the split."""
+
+  # A map of local names to the names of other locals or function parameters
+  # that the local depends on directly (i.e. not via another local or function
+  # parameter).
+  local_to_immediate_dependencies: Dict[str, Set[str]] = attr.ib(
+      factory=lambda: collections.defaultdict(set))
+
+  # A set of the local names or function parameters that the computation result
+  # depends on directly.
+  result_immediate_dependencies: Set[str] = attr.ib(factory=set)
+
+  # A map of names of locals with no placement to a set of the placements that
+  # ultimately have a dependency on the local.
+  placeless_local_to_needed_by_placements: Dict[
+      str, Set[placements.PlacementLiteral]] = attr.ib(
+          factory=lambda: collections.defaultdict(set))
+
+  # A map of names of locals to a set of the placements that the local depends
+  # on either directly or indirectly.
+  local_to_all_placement_dependencies: Dict[
+      str, Set[placements.PlacementLiteral]] = attr.ib(
+          factory=lambda: collections.defaultdict(set))
+
+  # A list of local_name, local_value pairs that represent instances of the
+  # intrinsics.
+  uri_locals_bindings: List[_NamedBinding] = attr.ib(factory=list)
+
+
+def _compute_intrinsic_dependencies_for_divisive_split(
+    intrinsic_uris: Set[str],
+    parameter_name: str,
+    result_block: building_blocks.Block,
+    comp_repr: str,
+) -> _IntrinsicDependenciesForDivisiveSplit:
+  """Computes the _IntrinsicDependenciesForDivisiveSplit for a computation."""
+
+  result = _IntrinsicDependenciesForDivisiveSplit()
+
+  # Track the intrinsics of interest that each local depends on, either directly
+  # or indirectly, so that we can check whether the intrinsics are alignable.
+  intrinsic_dependencies_for_ref: Dict[str, Set[str]] = {}
+  intrinsic_dependencies_for_ref[parameter_name] = set()
+
+  # Track the placements that each local depends on, either directly or
+  # indirectly.
+  placement_dependencies_for_ref: Dict[str, Set[str]] = {}
+  placement_dependencies_for_ref[parameter_name] = set()
+
+  # Track the non-placed locals that each local depends on, either directly or
+  # indirectly but not via one of the intrinsic_uris. For example, if `a@SERVER`
+  # depended directly on `c`, then `c` should be added to the set for `a`. If
+  # `a@SERVER` depended on `b@SERVER = federated_modular_sum(d@CLIENTS, c)` and
+  # `federated_modular_sum` was in `intrinsic_uris`, then `c` should not be
+  # added to the set for `a`.
+  unmediated_placeless_dependencies_for_ref: Dict[str, Set[str]] = {}
+  unmediated_placeless_dependencies_for_ref[parameter_name] = set()
+
+  # Track the placement of all placed locals.
+  local_to_placement: Dict[str, placements.PlacementLiteral] = {}
+
+  def record_dependencies(value):
+    """Calculates various types of dependency sets for a given local value."""
+
+    intrinsic_dependencies = set()
+    immediate_dependencies = set()
+    placement_dependencies = set()
+    unmediated_placeless_dependencies = set()
+
+    def traversal(subvalue):
+      nonlocal intrinsic_dependencies
+      nonlocal immediate_dependencies
+      nonlocal placement_dependencies
+
+      # When a reference is encountered in the tree, add it as an immediate
+      # dependency. Use the reference's previously computed sets of intrinsic
+      # and placement dependencies to extend the current cumulative sets of
+      # intrinsic and placement dependencies.
+      if subvalue.is_reference():
+        immediate_dependencies.add(subvalue.name)
+
+        if subvalue.name not in intrinsic_dependencies_for_ref:
+          raise ValueError(f'Can\'t resolve {subvalue.name}\n'
+                           f'Current map {intrinsic_dependencies_for_ref}\n'
+                           f'Original comp: {comp_repr}\n')
+        intrinsic_dependencies.update(
+            intrinsic_dependencies_for_ref[subvalue.name])
+
+        if subvalue.name not in placement_dependencies_for_ref:
+          raise ValueError(f'Can\'t resolve {subvalue.name}\n'
+                           f'Current map {placement_dependencies_for_ref}\n'
+                           f'Original comp: {comp_repr}\n')
+        placement_dependencies.update(
+            placement_dependencies_for_ref[subvalue.name])
+
+      # Sometimes the placement for a local will come from a non-reference (e.g.
+      # a lambda).
+      if subvalue.type_signature.is_federated():
+        placement_dependencies.add(subvalue.type_signature.placement)
+
+      # There is no need to traverse the subtree of a reference, lambda, or
+      # block.
+      return subvalue, (
+          subvalue.is_reference() or subvalue.is_lambda() or
+          subvalue.is_block())
+
+    def traversal_for_unmediated_placeless_dependencies(subvalue):
+      nonlocal unmediated_placeless_dependencies
+
+      # When a reference is encountered in the tree, extend the current
+      # cumulative set of dependencies with the previously computed set of
+      # dependencies that are unplaced and not linked to the reference via one
+      # of the intrinsic uris.
+      if subvalue.is_reference():
+        if subvalue.name not in unmediated_placeless_dependencies_for_ref:
+          raise ValueError(
+              f'Can\'t resolve {subvalue.name}\n'
+              f'Current map {unmediated_placeless_dependencies_for_ref}\n'
+              f'Original comp: {comp_repr}\n')
+        unmediated_placeless_dependencies.update(
+            unmediated_placeless_dependencies_for_ref[subvalue.name])
+
+      # Stop traversing when a reference, lambda, block, or one of the intrinsic
+      # uris is reached.
+      return subvalue, ((subvalue.is_call() and
+                         subvalue.function.is_intrinsic() and
+                         subvalue.function.uri in intrinsic_uris) or
+                        subvalue.is_reference() or subvalue.is_lambda() or
+                        subvalue.is_block())
+
+    transformation_utils.transform_preorder(value, traversal)
+    transformation_utils.transform_preorder(
+        value, traversal_for_unmediated_placeless_dependencies)
+
+    return (intrinsic_dependencies, immediate_dependencies,
+            placement_dependencies, unmediated_placeless_dependencies)
+
+  for local_name, local_value in result_block.locals:
+    if local_value.type_signature.is_federated():
+      local_to_placement[local_name] = local_value.type_signature.placement
+
+    (intrinsic_dependencies, immediate_dependencies, placement_dependencies,
+     unmmediated_placeless_dependencies) = record_dependencies(local_value)
+
+    # Check that this local is not an intrinsic call of interest that has a
+    # dependency on another intrinsic call of interest. If ok, update the
+    # intrinsic dependency tracker for the current local.
+    is_intrinsic_call = (
+        local_value.is_call() and local_value.function.is_intrinsic() and
+        local_value.function.uri in intrinsic_uris)
+    if is_intrinsic_call:
+      if intrinsic_dependencies:
+        raise _NonAlignableAlongIntrinsicError(
+            'Cannot force-align intrinsics:\n'
+            f'Call to intrinsic `{local_value.function.uri}` depends '
+            f'on calls to intrinsics:\n`{intrinsic_dependencies}`.')
+      intrinsic_dependencies_for_ref[local_name] = set(
+          [local_value.function.uri])
+      result.uri_locals_bindings.append((local_name, local_value))
+    else:
+      intrinsic_dependencies_for_ref[local_name] = set()
+
+    # Update the placeless dependency and placement dependency trackers for the
+    # current local.
+    if not local_value.type_signature.is_federated():
+      unmmediated_placeless_dependencies.add(local_name)
+    placement_dependencies_for_ref[local_name] = placement_dependencies
+    unmediated_placeless_dependencies_for_ref[
+        local_name] = unmmediated_placeless_dependencies
+
+    # The sets of immediate dependencies and placement dependencies can be
+    # stored in the _IntrinsicDependenciesForDivisiveSplit object.
+    result.local_to_immediate_dependencies[local_name] = immediate_dependencies
+    result.local_to_all_placement_dependencies[
+        local_name] = placement_dependencies
+
+  # Get the immediate dependencies for the computation result.
+  _, immediate_dependencies, _, _ = record_dependencies(result_block.result)
+  result.result_immediate_dependencies = immediate_dependencies
+
+  # Transform the tracker of non-placed local dependencies to the produce the
+  # dependency structure needed by the _IntrinsicDependenciesForDivisiveSplit
+  # object.
+  for local_name, unmediated_placeless_dependencies in unmediated_placeless_dependencies_for_ref.items(
+  ):
+    for placeless_local in unmediated_placeless_dependencies:
+      if local_name in local_to_placement.keys():
+        if placeless_local not in result.placeless_local_to_needed_by_placements:
+          result.placeless_local_to_needed_by_placements[placeless_local] = set(
+          )
+        result.placeless_local_to_needed_by_placements[placeless_local].add(
+            local_to_placement[local_name])
+
+  return result
+
+
+def divisive_force_align_and_split_by_intrinsics(
+    comp: building_blocks.Lambda,
+    starting_state_placement: placements.PlacementLiteral,
+    intrinsic_defs_to_split: List[intrinsic_defs.IntrinsicDef],
+) -> Tuple[building_blocks.Lambda, building_blocks.Lambda,
+           building_blocks.Lambda]:
+  """Divides `comp` into three components (before, intrinsic, after).
+
+  The input computation `comp` must have the following properties:
+
+  1. The computation `comp` is completely self-contained, i.e., there are no
+    references to arguments introduced in a scope external to `comp`.
+
+  2. `comp`'s return value must not contain uncalled lambdas.
+
+  3. None of the calls to intrinsics in `intrinsic_defs_to_split` may be within
+    a lambda passed to another external function (intrinsic or compiled
+    computation).
+
+  4. No argument passed to an intrinsic in `intrinsic_defs_to_split` may be
+    dependent on the result of another call to an intrinsic in
+    `intrinsic_defs_to_split`.
+
+  Under these conditions, this function will return three
+  `building_blocks.Lambda`s `before`, `intrinsic`, and `after` such that
+  `comp` is semantically equivalent to the following expression:
+  ```
+  (arg -> (let
+    x, temp = before(arg),
+    y = intrinsic(<arg, x>)
+   in after(<arg, temp, y>)))
+  ```
+
+  The `before` computation contains all parts of `comp` that 1) can be computed
+  at `starting_state_placement` without depending on any of the intrinsics in
+  `intrinsic_defs_to_split`, and 2) can still be accessible to other (i.e.
+  non-`before`) parts of the computation that have a dependency. The `before`
+  computation returns a tuple containing the inputs to the intrinsics and
+  temporary state that is needed in the `after` computation.
+
+  The `intrinsic` computation consists solely of calls to intrinsics in
+  `intrinsic_defs_to_split`. The i-th intrinsic call will obtain its arguments
+  from the original `comp` argument and/or the i-th entry of the second
+  component of the input struct, and will produce the i-th entry of the output
+  struct.
+
+  The `after` computation takes as input the original `comp` argument, the
+  temporary state produced by `before`, and the result of `intrinsic`. It
+  consists of all remaining parts of the `comp` that weren't already included
+  in `before` and `intrinsic`. It does not repeat anything from those earlier
+  components.
+
+  If the original computation `comp` had type `(T -> U)`, then `before` would
+  have type `(T -> <X,Z>)`, `intrinsic` would have type `(<T,X> -> Y)`, and
+  `after` would have type `(<T,Z,Y> -> U)`.
+
+  Args:
+    comp: The instance of `building_blocks.Lambda` that serves as the input to
+      this transformation, as described above.
+    starting_state_placement: The placement where the first component of the
+      split will be deployed.
+    intrinsic_defs_to_split: A list of intrinsics with which to split the
+      computation.
+
+  Returns:
+    A tuple of the form `(before, intrinsic, after)`, where each of `before`,
+    `intrinsic`, and `after` is a building_blocks.ComputationBuildingBlock`
+    instance that represents a part of the result as specified above.
+  """
+  py_typecheck.check_type(intrinsic_defs_to_split, list)
+  comp_repr = comp.compact_representation()
+  comp = _get_normalized_call_dominant_lambda(comp)
+  name_generator = building_block_factory.unique_name_generator(comp)
+
+  deps = _compute_intrinsic_dependencies_for_divisive_split(
+      [intrinsic_def.uri for intrinsic_def in intrinsic_defs_to_split],
+      comp.parameter_name, comp.result, comp_repr)
+
+  # Construct a list of all local names that are the direct result of calls to
+  # intrinsics in `intrinsic_defs_to_split`.
+  uri_locals = [local_name for local_name, _ in deps.uri_locals_bindings]
+
+  locals_dict = collections.OrderedDict()
+  for local_name, local_value in comp.result.locals:
+    locals_dict[local_name] = local_value
+
+  # Iterate through all locals and decide whether they should be allocated to
+  # the `before`, `intrinsic`, or `after` computations. Locals should be
+  # assigned to appear in exactly one of these computations.
+  before_locals = []
+  intrinsic_locals = []
+  after_locals = []
+  for local_name, local_value in comp.result.locals:
+    # Locals that are the direct result of calls to intrinsics in
+    # `intrinsic_defs_to_split` are assigned to the `intrinsic` computation.
+    if local_name in uri_locals:
+      intrinsic_locals.append(local_name)
+      continue
+
+    # Assign locals meeting the following conditions to the `before`
+    # computation:
+    # 1. The local must either be:
+    #     a. Placed and have no direct or indirect dependencies on placements
+    #         other than `starting_state_placement`.
+    #     b. Not placed and not be depended on (except via the split intrinsic
+    #         uris) by placements other than `starting_state_placement`.
+    # 2. The local must depend only on other locals or arguments that are
+    #     already available in the `before` computation.
+    # Otherwise, assign them to the `after` computation.
+    val_is_placed = local_name not in deps.placeless_local_to_needed_by_placements
+    val_is_placed_and_requires_only_starting_state_placement = val_is_placed and deps.local_to_all_placement_dependencies[
+        local_name].issubset(set([starting_state_placement]))
+    val_is_placeless_and_not_anchored_to_after_comp = not val_is_placed and deps.placeless_local_to_needed_by_placements[
+        local_name].issubset(set([starting_state_placement]))
+    eligible_for_before_comp = val_is_placed_and_requires_only_starting_state_placement or val_is_placeless_and_not_anchored_to_after_comp
+    if eligible_for_before_comp:
+      for dependency in deps.local_to_immediate_dependencies[local_name]:
+        if not (dependency in before_locals or
+                dependency is comp.parameter_name):
+          eligible_for_before_comp = False
+    if eligible_for_before_comp:
+      before_locals.append(local_name)
+    else:
+      after_locals.append(local_name)
+
+  # If `after` locals or the original computation result have dependencies on
+  # variables from the `before` computation, these dependencies should be
+  # added to the temporary state.
+  state_locals = []
+
+  def maybe_add_dependency_to_state(dependency):
+    if not (dependency in after_locals or dependency in intrinsic_locals or
+            dependency in state_locals or dependency is comp.parameter_name):
+      assert dependency in before_locals
+      state_locals.append(dependency)
+
+  for local_name in after_locals:
+    for dependency in deps.local_to_immediate_dependencies[local_name]:
+      maybe_add_dependency_to_state(dependency)
+  for dependency in deps.result_immediate_dependencies:
+    maybe_add_dependency_to_state(dependency)
+
+  # Identify whether the parts of the intrinsic call arguments will come from
+  # the output of `before` or the original parameter of `comp`. If part of an
+  # intrinsic call argument has the same placement as `start_state_placement`,
+  # we assume it will come from the output of `before`. Otherwise we assume it
+  # will come from the original parameter of `comp`.
+  intrinsic_args_source_is_before_comp = []
+  for local_name, local_value in deps.uri_locals_bindings:
+    if local_value.argument.is_struct():
+      intrinsic_args_source_is_before_comp.append([
+          (intrinsic_arg, intrinsic_arg.type_signature.is_federated() and
+           intrinsic_arg.type_signature.placement == starting_state_placement)
+          for intrinsic_arg in local_value.argument
+      ])
+    else:
+      intrinsic_args_source_is_before_comp.append([
+          (local_value.argument,
+           local_value.argument.type_signature.is_federated() and
+           local_value.argument.type_signature.placement
+           == starting_state_placement)
+      ])
+
+  # Construct the `before` lambda computation. Its parameter is the same as
+  # the parameter from the original computation. Its output is a struct with two
+  # components: a subset of the intrinsic call arguments, and temporary state
+  # needed later by `after`.
+  intrinsic_args_from_before_comp = []
+  for intrinsic_args in intrinsic_args_source_is_before_comp:
+    intrinsic_args_from_before_comp.append([
+        intrinsic_arg for intrinsic_arg, source_is_before_comp in intrinsic_args
+        if source_is_before_comp
+    ])
+  before_result = [
+      ('intrinsic_args_from_before_comp',
+       building_blocks.Struct([
+           building_blocks.Struct(e) for e in intrinsic_args_from_before_comp
+       ])),
+      ('intermediate_state',
+       building_blocks.Struct([
+           building_blocks.Reference(state_local,
+                                     locals_dict[state_local].type_signature)
+           for state_local in state_locals
+       ]))
+  ]
+  before_comp = building_blocks.Lambda(
+      comp.parameter_name, comp.parameter_type,
+      building_blocks.Block([(before_local, locals_dict[before_local])
+                             for before_local in before_locals],
+                            building_blocks.Struct(before_result)))
+
+  # Construct the `intrinsic` lambda computation. Its parameter is a struct
+  # containing the parameter from the original computation and the intrinsic
+  # inputs generated by the `before` computation. Its output is the result
+  # of the intrinsic computations.
+  intrinsic_param_name = next(name_generator)
+  intrinsic_args_from_before_comp_type = [[
+      e.type_signature for e in intrinsic_args
+  ] for intrinsic_args in intrinsic_args_from_before_comp]
+  intrinsic_param_type = computation_types.StructType([
+      ('original_arg', comp.parameter_type),
+      ('intrinsic_args_from_before_comp',
+       computation_types.StructType([
+           computation_types.StructType(e)
+           for e in intrinsic_args_from_before_comp_type
+       ]))
+  ])
+  intrinsic_param_ref = building_blocks.Reference(intrinsic_param_name,
+                                                  intrinsic_param_type)
+  intrinsic_calls = []
+  for i, intrinsic_local in enumerate(intrinsic_locals):
+    arg_from_before_comp_counter = 0
+    args_for_call = []
+    for intrinsic_arg, source_is_before_comp in intrinsic_args_source_is_before_comp[
+        i]:
+      if source_is_before_comp:
+        args_for_call.append(
+            building_blocks.Selection(
+                building_blocks.Selection(
+                    building_blocks.Selection(
+                        intrinsic_param_ref, 'intrinsic_args_from_before_comp'),
+                    index=i),
+                index=arg_from_before_comp_counter))
+        arg_from_before_comp_counter += 1
+      else:
+        args_for_call.append(intrinsic_arg)
+    intrinsic_calls.append(
+        (intrinsic_local,
+         building_blocks.Call(
+             locals_dict[intrinsic_local].function,
+             building_blocks.Struct(args_for_call)
+             if locals_dict[intrinsic_local].argument.is_struct() else
+             args_for_call[0])))
+  bindings = []
+  if comp.parameter_type is not None:
+    bindings.append((comp.parameter_name,
+                     building_blocks.Selection(intrinsic_param_ref,
+                                               'original_arg')))
+  intrinsic_comp = building_blocks.Lambda(
+      intrinsic_param_name, intrinsic_param_type,
+      building_blocks.Block(
+          bindings + intrinsic_calls,
+          building_blocks.Struct([
+              building_blocks.Reference(
+                  intrinsic_local, locals_dict[intrinsic_local].type_signature)
+              for intrinsic_local in intrinsic_locals
+          ])))
+
+  # Construct the `after` lambda computation. Its parameter is a struct
+  # containing the parameter from the original computation, the temporary state
+  # created by the `before` computation, and the result of the `intrinsic`
+  # computation. Its output should match the output of the original computation.
+  after_param_name = next(name_generator)
+  after_param_type = computation_types.StructType([
+      ('original_arg', comp.parameter_type),
+      ('intermediate_state',
+       computation_types.StructType([
+           locals_dict[state_local].type_signature
+           for state_local in state_locals
+       ])),
+      ('intrinsic_results',
+       computation_types.StructType(locals_dict[intrinsic_local].type_signature
+                                    for intrinsic_local in intrinsic_locals))
+  ])
+  after_param_ref = building_blocks.Reference(after_param_name,
+                                              after_param_type)
+  bindings = []
+  if comp.parameter_type is not None:
+    bindings.append((comp.parameter_name,
+                     building_blocks.Selection(after_param_ref,
+                                               'original_arg')))
+  for i, state_local in enumerate(state_locals):
+    bindings.append((state_local,
+                     building_blocks.Selection(
+                         building_blocks.Selection(
+                             after_param_ref, name='intermediate_state'),
+                         index=i)))
+  for i, intrinsic_name in enumerate(intrinsic_locals):
+    bindings.append((intrinsic_name,
+                     building_blocks.Selection(
+                         building_blocks.Selection(
+                             after_param_ref, name='intrinsic_results'),
+                         index=i)))
+  after_comp = building_blocks.Lambda(
+      after_param_name, after_param_type,
+      building_blocks.Block(
+          bindings + [(after_local, locals_dict[after_local])
+                      for after_local in after_locals], comp.result.result))
+
+  return (tree_transformations.uniquify_reference_names(before_comp)[0],
+          tree_transformations.uniquify_reference_names(intrinsic_comp)[0],
+          tree_transformations.uniquify_reference_names(after_comp)[0])

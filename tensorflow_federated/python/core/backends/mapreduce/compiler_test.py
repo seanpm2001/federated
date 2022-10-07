@@ -90,8 +90,7 @@ class CheckExtractionResultTest(absltest.TestCase):
   def test_raises_non_function_and_compiled_computation(self):
     initialize = (
         mapreduce_test_utils.get_temperature_sensor_example().initialize)
-    init = form_utils.get_state_initialization_computation_for_map_reduce_form(
-        initialize)
+    init = form_utils.get_state_initialization_computation(initialize)
     compiled_computation = self.compiled_computation_for_initialize(init)
     integer_ref = building_blocks.Reference('x', tf.int32)
     with self.assertRaisesRegex(compiler.MapReduceFormCompilationError,
@@ -101,8 +100,7 @@ class CheckExtractionResultTest(absltest.TestCase):
   def test_raises_function_and_compiled_computation_of_different_type(self):
     initialize = (
         mapreduce_test_utils.get_temperature_sensor_example().initialize)
-    init = form_utils.get_state_initialization_computation_for_map_reduce_form(
-        initialize)
+    init = form_utils.get_state_initialization_computation(initialize)
     compiled_computation = self.compiled_computation_for_initialize(init)
     function = building_blocks.Reference(
         'f', computation_types.FunctionType(tf.int32, tf.int32))
@@ -122,8 +120,7 @@ class CheckExtractionResultTest(absltest.TestCase):
   def test_passes_function_and_compiled_computation_of_same_type(self):
     initialize = (
         mapreduce_test_utils.get_temperature_sensor_example().initialize)
-    init = form_utils.get_state_initialization_computation_for_map_reduce_form(
-        initialize)
+    init = form_utils.get_state_initialization_computation(initialize)
     compiled_computation = self.compiled_computation_for_initialize(init)
     function = building_blocks.Reference('f',
                                          compiled_computation.type_signature)
@@ -140,8 +137,7 @@ class ConsolidateAndExtractTest(absltest.TestCase):
   def test_already_reduced_case(self):
     initialize = (
         mapreduce_test_utils.get_temperature_sensor_example().initialize)
-    init = form_utils.get_state_initialization_computation_for_map_reduce_form(
-        initialize)
+    init = form_utils.get_state_initialization_computation(initialize)
 
     comp = init.to_building_block()
 

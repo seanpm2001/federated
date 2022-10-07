@@ -32,6 +32,7 @@ from tensorflow_federated.python.core.backends.mapreduce import compiler
 from tensorflow_federated.python.core.backends.mapreduce import forms
 from tensorflow_federated.python.core.impl.compiler import building_block_factory
 from tensorflow_federated.python.core.impl.compiler import building_blocks
+from tensorflow_federated.python.core.impl.compiler import intrinsic_defs
 from tensorflow_federated.python.core.impl.compiler import transformation_utils
 from tensorflow_federated.python.core.impl.compiler import transformations
 from tensorflow_federated.python.core.impl.compiler import tree_analysis
@@ -79,7 +80,7 @@ def get_computation_for_broadcast_form(
   return computation
 
 
-def get_state_initialization_computation_for_map_reduce_form(
+def get_state_initialization_computation(
     initialize_computation: computation_base.Computation,
     grappler_config: tf.compat.v1.ConfigProto = _GRAPPLER_DEFAULT_CONFIG
 ) -> computation_base.Computation:
@@ -90,16 +91,14 @@ def get_state_initialization_computation_for_map_reduce_form(
       generate initial state for a computation that is compatible with
       MapReduceForm.
     grappler_config: An optional instance of `tf.compat.v1.ConfigProto` to
-      configure Grappler graph optimization of the TensorFlow graphs backing the
-      resulting `tff.backends.mapreduce.MapReduceForm`. These options are
-      combined with a set of defaults that aggressively configure Grappler. If
-      the input `grappler_config` has
+      configure Grappler graph optimization of the TensorFlow graphs. These
+      options are combined with a set of defaults that aggressively configure
+      Grappler. If the input `grappler_config` has
       `graph_options.rewrite_options.disable_meta_optimizer=True`, Grappler is
       bypassed.
 
   Returns:
-    A `computation_base.Computation` that can generate state for a computation
-    that is compatible with MapReduceForm.
+    A `computation_base.Computation` that can generate state for a computation.
 
   Raises:
     TypeError: If the arguments are of the wrong types.
@@ -160,6 +159,37 @@ def get_computation_for_map_reduce_form(
                         secure_sum_result, secure_modular_sum_result)))
     updated_server_state, server_output = intrinsics.federated_map(
         mrf.update, update_arg)
+    return updated_server_state, server_output
+
+  return computation
+
+
+def get_computation_for_distribute_aggregate_form(
+    daf: forms.DistributeAggregateForm) -> computation_base.Computation:
+  """Creates `tff.Computation` from a DistributeAggregate form.
+
+  Args:
+    daf: An instance of `tff.backends.mapreduce.DistributeAggregateForm`.
+
+  Returns:
+    An instance of `tff.Computation` that corresponds to `daf`.
+
+  Raises:
+    TypeError: If the arguments are of the wrong types.
+  """
+  py_typecheck.check_type(daf, forms.DistributeAggregateForm)
+
+  @federated_computation.federated_computation(daf.type_signature.parameter)
+  def computation(arg):
+    """The logic of a single federated computation round."""
+    server_state, client_data = arg
+    broadcast_input, temp_server_state = daf.server_prepare(server_state)
+    broadcast_output = daf.server_to_client_broadcast(broadcast_input)
+    aggregation_input = daf.client_work(client_data, broadcast_output)
+    aggregation_output = daf.client_to_server_aggregation(
+        temp_server_state, aggregation_input)
+    updated_server_state, server_output = daf.server_result(
+        server_state, temp_server_state, aggregation_output)
     return updated_server_state, server_output
 
   return computation
@@ -557,6 +587,52 @@ def _as_function_of_some_federated_subparameters(
   lambda_with_zipped_param = building_blocks.Lambda(ref_to_zip.name,
                                                     ref_to_zip.type_signature,
                                                     new_lambda_body)
+  tree_analysis.check_contains_no_new_unbound_references(
+      bb, lambda_with_zipped_param)
+
+  return lambda_with_zipped_param
+
+
+def _as_function_of_some_subparameters(
+    bb: building_blocks.Lambda,
+    paths,
+) -> building_blocks.Lambda:
+  """Turns `x -> ...only uses parts of x...` into `parts_of_x -> ...`."""
+  tree_analysis.check_has_unique_names(bb)
+  bb = _prepare_for_rebinding(bb)
+  name_generator = building_block_factory.unique_name_generator(bb)
+
+  type_list = []
+  int_paths = []
+  for path in paths:
+    selected_type = bb.parameter_type
+    int_path = []
+    for index in path:
+      if not selected_type.is_struct():
+        raise _ParameterSelectionError(path, bb)
+      if isinstance(index, int):
+        if index > len(selected_type):
+          raise _ParameterSelectionError(path, bb)
+        int_path.append(index)
+      else:
+        py_typecheck.check_type(index, str)
+        if not structure.has_field(selected_type, index):
+          raise _ParameterSelectionError(path, bb)
+        int_path.append(structure.name_to_index_map(selected_type)[index])
+      selected_type = selected_type[index]
+    int_paths.append(tuple(int_path))
+    type_list.append(selected_type)
+
+  ref_to_struct = building_blocks.Reference(next(name_generator), type_list)
+  path_to_replacement = {}
+  for i, path in enumerate(int_paths):
+    path_to_replacement[path] = building_blocks.Selection(
+        ref_to_struct, index=i)
+
+  new_lambda_body = _replace_selections(bb.result, bb.parameter_name,
+                                        path_to_replacement)
+  lambda_with_zipped_param = building_blocks.Lambda(
+      ref_to_struct.name, ref_to_struct.type_signature, new_lambda_body)
   tree_analysis.check_contains_no_new_unbound_references(
       bb, lambda_with_zipped_param)
 
@@ -967,3 +1043,101 @@ def get_map_reduce_form_for_computation(
       computation_impl.ConcreteComputation.from_building_block(bb)
       for bb in blocks)
   return forms.MapReduceForm(comp.type_signature, *comps)
+
+
+def get_distribute_aggregate_form_for_computation(
+    comp: computation_base.Computation,
+    *,
+    tff_internal_preprocessing: Optional[BuildingBlockFn] = None,
+) -> forms.DistributeAggregateForm:
+  """Constructs `DistributeAggregateForm` for a computation.
+
+  Args:
+    comp: An instance of `computation_base.Computation` that is compatible with
+      `DistributeAggregateForm`. The computation must take exactly two
+      arguments, and the first must be a state value placed at `SERVER`. The
+      computation must return exactly two values. The type of the first element
+      in the result must also be assignable to the first element of the
+      parameter.
+    tff_internal_preprocessing: An optional function to transform the AST of the
+      iterative process.
+
+  Returns:
+    An instance of `tff.backends.mapreduce.DistributeAggregateForm` equivalent
+    to the provided `computation_base.Computation`.
+
+  Raises:
+    TypeError: If the arguments are of the wrong types.
+  """
+  py_typecheck.check_type(comp, computation_base.Computation)
+
+  # Apply any requested preprocessing to the computation.
+  comp_tree = comp.to_building_block()
+  if tff_internal_preprocessing is not None:
+    comp_tree = tff_internal_preprocessing(comp_tree)
+
+  # Check that the computation has the expected structure.
+  comp_type = comp_tree.type_signature
+  _check_type_is_fn(comp_type, '`comp`', TypeError)
+  if not comp_type.parameter.is_struct() or len(comp_type.parameter) != 2:
+    raise TypeError('Expected `comp` to take two arguments, found parameter '
+                    f' type:\n{comp_type.parameter}')
+  if not comp_type.result.is_struct() or len(comp_type.result) != 2:
+    raise TypeError('Expected `comp` to return two values, found result '
+                    f'type:\n{comp_type.result}')
+  comp_tree = _replace_lambda_body_with_call_dominant_form(comp_tree)
+  comp_tree, _ = tree_transformations.uniquify_reference_names(comp_tree)
+  tree_analysis.check_broadcast_not_dependent_on_aggregate(comp_tree)
+
+  # Split first on the broadcast intrinsics, then on the aggregation intrinsics.
+  before_broadcast, intrinsic_broadcast, after_broadcast = transformations.divisive_force_align_and_split_by_intrinsics(
+      comp_tree, placements.SERVER, intrinsic_defs.get_broadcast_intrinsics())
+  before_aggregate, intrinsic_aggregate, after_aggregate = transformations.divisive_force_align_and_split_by_intrinsics(
+      after_broadcast, placements.CLIENTS,
+      intrinsic_defs.get_aggregation_intrinsics())
+
+  # Extract the server_prepare component.
+  server_state_index_in_before_broadcast = 0
+  server_prepare = _as_function_of_single_subparameter(
+      before_broadcast, server_state_index_in_before_broadcast)
+
+  # Extract the server_to_client_broadcast component.
+  intrinsic_args_from_before_comp_index_in_intrinsic_broadcast = 1
+  broadcast = _as_function_of_single_subparameter(
+      intrinsic_broadcast,
+      intrinsic_args_from_before_comp_index_in_intrinsic_broadcast)
+
+  # Extract the client_work component.
+  client_data_index = ('original_arg', 1)
+  broadcast_result_index = ('intrinsic_results',)
+  client_work = _as_function_of_some_subparameters(
+      before_aggregate, [client_data_index, broadcast_result_index])
+  client_work = building_block_factory.select_output_from_lambda(
+      client_work, ('intrinsic_args_from_before_comp',))
+
+  # Extract the client_to_server_aggregation component.
+  intermediate_state_index = (
+      'original_arg',
+      'intermediate_state',
+  )
+  intrinsic_input_from_before_index_in_aggregate = (
+      'intrinsic_args_from_before_comp',)
+  aggregate = _as_function_of_some_subparameters(intrinsic_aggregate, [
+      intermediate_state_index, intrinsic_input_from_before_index_in_aggregate
+  ])
+
+  # Extract the server_result component.
+  server_state_index_in_after_aggregate = ('original_arg', 'original_arg', 0)
+  aggregate_result_index = ('intrinsic_results',)
+  server_result = _as_function_of_some_subparameters(after_aggregate, [
+      server_state_index_in_after_aggregate, intermediate_state_index,
+      aggregate_result_index
+  ])
+
+  blocks = (server_prepare, broadcast, client_work, aggregate, server_result)
+
+  comps = (
+      computation_impl.ConcreteComputation.from_building_block(bb)
+      for bb in blocks)
+
+  return forms.DistributeAggregateForm(comp.type_signature, *comps)

@@ -1192,7 +1192,10 @@ def _possibly_disallowed_children(
   disallowed = _PossiblyDisallowedChildren(None, None, None)
   for child_type in type_signature.children():
     if child_type is None:
-      raise ValueError(type_signature)
+      if not type_signature.is_struct():
+        raise ValueError(type_signature)
+      else:
+        continue
     if child_type.is_federated():
       disallowed = attr.evolve(disallowed, federated=child_type)
     elif child_type.is_function():

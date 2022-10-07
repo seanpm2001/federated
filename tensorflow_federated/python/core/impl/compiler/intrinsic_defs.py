@@ -19,7 +19,7 @@
 """Definitions of all intrinsic for use within the system."""
 
 import enum
-from typing import Optional
+from typing import List, Optional
 
 import tensorflow as tf
 
@@ -581,3 +581,17 @@ SEQUENCE_SUM = IntrinsicDef(
 
 def uri_to_intrinsic_def(uri) -> Optional[IntrinsicDef]:
   return _intrinsic_registry.get(uri)
+
+
+def get_broadcast_intrinsics() -> List[IntrinsicDef]:
+  return [
+      intrinsic for intrinsic in _intrinsic_registry.values()
+      if intrinsic.broadcast_kind
+  ]
+
+
+def get_aggregation_intrinsics() -> List[IntrinsicDef]:
+  return [
+      intrinsic for intrinsic in _intrinsic_registry.values()
+      if intrinsic.aggregation_kind
+  ]
