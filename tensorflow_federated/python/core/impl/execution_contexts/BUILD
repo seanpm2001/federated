@@ -25,12 +25,12 @@ py_library(
     srcs_version = "PY3",
     deps = [
         ":compiler_pipeline",
+        ":execution_context",
         "//tensorflow_federated/python/common_libs:py_typecheck",
         "//tensorflow_federated/python/common_libs:retrying",
         "//tensorflow_federated/python/common_libs:structure",
         "//tensorflow_federated/python/common_libs:tracing",
         "//tensorflow_federated/python/core/impl/computation:computation_base",
-        "//tensorflow_federated/python/core/impl/context_stack:context_base",
         "//tensorflow_federated/python/core/impl/executors:cardinalities_utils",
         "//tensorflow_federated/python/core/impl/executors:executor_base",
         "//tensorflow_federated/python/core/impl/executors:executor_factory",
@@ -92,9 +92,11 @@ py_library(
     ],
     deps = [
         ":compiler_pipeline",
+        ":execution_context",
         "//tensorflow_federated/python/common_libs:retrying",
-        "//tensorflow_federated/python/core/impl/context_stack:context_base",
+        "//tensorflow_federated/python/core/impl/computation:computation_base",
         "//tensorflow_federated/python/core/impl/executors:cardinalities_utils",
+        "//tensorflow_federated/python/core/impl/executors:executor_factory",
         "//tensorflow_federated/python/core/impl/executors:value_serialization",
         "//tensorflow_federated/python/core/impl/types:type_conversions",
         "//third_party/pybind11_abseil:status",
@@ -110,9 +112,11 @@ py_library(
     ],
     deps = [
         ":cpp_async_execution_context",
+        ":execution_context",
         "//tensorflow_federated/python/common_libs:async_utils",
-        "//tensorflow_federated/python/core/impl/context_stack:context_base",
+        "//tensorflow_federated/python/core/impl/computation:computation_base",
         "//tensorflow_federated/python/core/impl/executors:cardinalities_utils",
+        "//tensorflow_federated/python/core/impl/executors:executor_factory",
     ],
 )
 
@@ -122,10 +126,9 @@ py_library(
     srcs_version = "PY3",
     deps = [
         ":async_execution_context",
+        ":execution_context",
         "//tensorflow_federated/python/common_libs:async_utils",
-        "//tensorflow_federated/python/common_libs:py_typecheck",
         "//tensorflow_federated/python/core/impl/computation:computation_base",
-        "//tensorflow_federated/python/core/impl/context_stack:context_base",
         "//tensorflow_federated/python/core/impl/executors:cardinalities_utils",
         "//tensorflow_federated/python/core/impl/executors:executor_factory",
     ],
@@ -170,6 +173,15 @@ py_library(
         "//tensorflow_federated/python/core/impl/types:type_analysis",
         "//tensorflow_federated/python/core/impl/types:type_conversions",
         "//tensorflow_federated/python/core/impl/types:typed_object",
+    ],
+)
+
+py_library(
+    name = "execution_context",
+    srcs = ["execution_context.py"],
+    deps = [
+        "//tensorflow_federated/python/core/impl/context_stack:context_base",
+        "//tensorflow_federated/python/core/impl/executors:executor_factory",
     ],
 )
 

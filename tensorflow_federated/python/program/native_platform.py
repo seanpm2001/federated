@@ -22,7 +22,7 @@ from tensorflow_federated.python.common_libs import async_utils
 from tensorflow_federated.python.common_libs import py_typecheck
 from tensorflow_federated.python.common_libs import structure
 from tensorflow_federated.python.core.impl.computation import computation_base
-from tensorflow_federated.python.core.impl.context_stack import context_base
+from tensorflow_federated.python.core.impl.execution_contexts import execution_context
 from tensorflow_federated.python.core.impl.types import computation_types
 from tensorflow_federated.python.core.impl.types import placements
 from tensorflow_federated.python.core.impl.types import type_conversions
@@ -153,16 +153,16 @@ async def _materialize_structure_of_value_references(
 
 
 class NativeFederatedContext(federated_context.FederatedContext):
-  """A `tff.program.FederatedContext` backed by an `tff.framework.AsyncContext`.
+  """A `tff.program.FederatedContext` backed by an `tff.framework.AsyncExecutionContext`.
   """
 
-  def __init__(self, context: context_base.AsyncContext):
+  def __init__(self, context: execution_context.AsyncExecutionContext):
     """Returns an initialized `tff.program.NativeFederatedContext`.
 
     Args:
-      context: An `tff.framework.AsyncContext`.
+      context: An `tff.framework.AsyncExecutionContext`.
     """
-    py_typecheck.check_type(context, context_base.AsyncContext)
+    py_typecheck.check_type(context, execution_context.AsyncExecutionContext)
 
     self._context = context
 
@@ -190,7 +190,7 @@ class NativeFederatedContext(federated_context.FederatedContext):
           'structures, server-placed values, or tensors, found '
           f'\'{result_type}\'.')
 
-    async def _invoke(context: context_base.AsyncContext,
+    async def _invoke(context: execution_context.AsyncExecutionContext,
                       comp: computation_base.Computation, arg: Any) -> Any:
       if comp.type_signature.parameter is not None:
         arg = await _materialize_structure_of_value_references(

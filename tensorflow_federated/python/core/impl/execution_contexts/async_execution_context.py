@@ -20,9 +20,7 @@
 
 import asyncio
 import contextlib
-from typing import Any
-from typing import Callable
-from typing import Optional
+from typing import Any, Callable, Optional
 
 import tensorflow as tf
 
@@ -31,11 +29,11 @@ from tensorflow_federated.python.common_libs import retrying
 from tensorflow_federated.python.common_libs import structure
 from tensorflow_federated.python.common_libs import tracing
 from tensorflow_federated.python.core.impl.computation import computation_base
-from tensorflow_federated.python.core.impl.context_stack import context_base
 from tensorflow_federated.python.core.impl.execution_contexts import compiler_pipeline
+from tensorflow_federated.python.core.impl.execution_contexts import execution_context
 from tensorflow_federated.python.core.impl.executors import cardinalities_utils
 from tensorflow_federated.python.core.impl.executors import executor_base
-from tensorflow_federated.python.core.impl.executors import executor_factory
+from tensorflow_federated.python.core.impl.executors import executor_factory as executor_factory_lib
 from tensorflow_federated.python.core.impl.executors import executor_value_base
 from tensorflow_federated.python.core.impl.executors import executors_errors
 from tensorflow_federated.python.core.impl.executors import ingestable_base
@@ -144,7 +142,7 @@ async def _invoke(executor, comp, arg, result_type: computation_types.Type):
   return type_conversions.type_to_py_container(result_val, result_type)
 
 
-class AsyncExecutionContext(context_base.AsyncContext):
+class AsyncExecutionContext(execution_context.AsyncExecutionContext):
   """An asynchronous execution context backed by an `executor_base.Executor`.
 
   This context's `ingest` and `invoke` methods return Python coroutine objects
@@ -157,7 +155,7 @@ class AsyncExecutionContext(context_base.AsyncContext):
 
   def __init__(
       self,
-      executor_fn: executor_factory.ExecutorFactory,
+      executor_fn: executor_factory_lib.ExecutorFactory,
       compiler_fn: Optional[Callable[[computation_base.Computation],
                                      Any]] = None,
       *,
@@ -174,7 +172,7 @@ class AsyncExecutionContext(context_base.AsyncContext):
         of `executor_fn` to construct a `tff.framework.Executor` instance.
     """
     super().__init__()
-    py_typecheck.check_type(executor_fn, executor_factory.ExecutorFactory)
+
     self._executor_factory = executor_fn
     if compiler_fn is not None:
       py_typecheck.check_callable(compiler_fn)
@@ -194,7 +192,7 @@ class AsyncExecutionContext(context_base.AsyncContext):
       raise
 
   @property
-  def executor_factory(self) -> executor_factory.ExecutorFactory:
+  def executor_factory(self) -> executor_factory_lib.ExecutorFactory:
     return self._executor_factory
 
   @retrying.retry(

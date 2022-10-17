@@ -21,6 +21,7 @@ from absl.testing import parameterized
 import tensorflow as tf
 
 from tensorflow_federated.python.core.backends.native import execution_contexts
+from tensorflow_federated.python.core.backends.native import execution_contexts
 from tensorflow_federated.python.core.impl.types import computation_types
 from tensorflow_federated.python.core.impl.types import placements
 from tensorflow_federated.python.program import data_source
@@ -30,6 +31,42 @@ from tensorflow_federated.python.program import prefetching_data_source
 
 class PrefetchingDataSourceTest(parameterized.TestCase,
                                 unittest.IsolatedAsyncioTestCase):
+
+  @parameterized.named_parameters(
+      ('async_cpp',
+       execution_contexts.create_local_async_python_execution_context()),
+      ('async_python',
+       execution_contexts.create_local_async_python_execution_context()),
+  )
+  def test_init_does_not_raise_type_error_with_context(self, context):
+    try:
+      prefetching_data_source.PrefetchingDataSource(
+          data_source=mock.create_autospec(data_source.FederatedDataSource),
+          total_rounds=10,
+          num_rounds_to_prefetch=3,
+          num_clients_to_prefetch=2,
+          context=context,
+          buffer_size=0)
+    except TypeError:
+      self.fail('Raised `TypeError` unexpectedly.')
+
+  # pyformat: disable
+  @parameterized.named_parameters(
+      ('sync_cpp',
+       execution_contexts.create_local_python_execution_context()),
+      ('sync_python',
+       execution_contexts.create_local_python_execution_context()),
+  )
+  # pyformat: enable
+  def test_init_raises_type_error_with_context(self, context):
+    with self.assertRaises(TypeError):
+      prefetching_data_source.PrefetchingDataSource(
+          data_source=mock.MagicMock(),
+          total_rounds=10,
+          num_rounds_to_prefetch=3,
+          num_clients_to_prefetch=2,
+          context=context,
+          buffer_size=0)
 
   @parameterized.named_parameters(
       ('int', [1, 2, 3], tf.int32),

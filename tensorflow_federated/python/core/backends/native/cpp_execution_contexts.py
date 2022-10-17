@@ -32,8 +32,10 @@ def set_local_cpp_execution_context(default_num_clients: int = 0,
 
 
 def create_local_cpp_execution_context(
-    default_num_clients: int = 0, max_concurrent_computation_calls: int = -1):
-  """Creates a local execution context backed by TFF-C++ runtime.
+    default_num_clients: int = 0,
+    max_concurrent_computation_calls: int = -1
+) -> cpp_sync_execution_context.SyncSerializeAndExecuteCPPContext:
+  """Returns a local execution context backed by TFF-C++ runtime.
 
   Args:
     default_num_clients: The number of clients to use as the default
@@ -42,9 +44,6 @@ def create_local_cpp_execution_context(
     max_concurrent_computation_calls: The maximum number of concurrent calls to
       a single computation in the CPP runtime. If nonpositive, there is no
       limit.
-
-  Returns:
-    An instance of `tff.framework.SyncContext` representing the TFF-C++ runtime.
   """
   factory = cpp_executor_factory.local_cpp_executor_factory(
       default_num_clients=default_num_clients,
@@ -55,8 +54,10 @@ def create_local_cpp_execution_context(
 
 
 def create_local_async_cpp_execution_context(
-    default_num_clients: int = 0, max_concurrent_computation_calls: int = -1):
-  """Creates a local async execution context backed by TFF-C++ runtime.
+    default_num_clients: int = 0,
+    max_concurrent_computation_calls: int = -1
+) -> cpp_async_execution_context.AsyncSerializeAndExecuteCPPContext:
+  """Returns a local async execution context backed by TFF-C++ runtime.
 
   Args:
     default_num_clients: The number of clients to use as the default
@@ -65,9 +66,6 @@ def create_local_async_cpp_execution_context(
     max_concurrent_computation_calls: The maximum number of concurrent calls to
       a single computation in the CPP runtime. If nonpositive, there is no
       limit.
-
-  Returns:
-    An instance of `context_base.AsyncContext` representing the TFF-C++ runtime.
   """
   factory = cpp_executor_factory.local_cpp_executor_factory(
       default_num_clients=default_num_clients,
@@ -107,7 +105,7 @@ def create_remote_cpp_execution_context(
     channels: Sequence[executor_bindings.GRPCChannel],
     default_num_clients: int = 0
 ) -> cpp_sync_execution_context.SyncSerializeAndExecuteCPPContext:
-  """Creates a remote execution context backed by TFF-C++ runtime."""
+  """Returns a remote execution context backed by TFF-C++ runtime."""
   factory = cpp_executor_factory.remote_cpp_executor_factory(
       channels=channels, default_num_clients=default_num_clients)
   context = cpp_sync_execution_context.SyncSerializeAndExecuteCPPContext(
@@ -119,7 +117,7 @@ def create_remote_async_cpp_execution_context(
     channels: Sequence[executor_bindings.GRPCChannel],
     default_num_clients: int = 0
 ) -> cpp_async_execution_context.AsyncSerializeAndExecuteCPPContext:
-  """Creates a remote execution context backed by TFF-C++ runtime."""
+  """Returns a remote execution context backed by TFF-C++ runtime."""
   factory = cpp_executor_factory.remote_cpp_executor_factory(
       channels=channels, default_num_clients=default_num_clients)
   context = cpp_async_execution_context.AsyncSerializeAndExecuteCPPContext(

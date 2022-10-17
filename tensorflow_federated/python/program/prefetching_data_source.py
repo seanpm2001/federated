@@ -18,7 +18,7 @@ import threading
 from typing import Any, Awaitable, Callable, List, Mapping, Optional
 
 from tensorflow_federated.python.common_libs import py_typecheck
-from tensorflow_federated.python.core.impl.execution_contexts import async_execution_context
+from tensorflow_federated.python.core.impl.execution_contexts import execution_context
 from tensorflow_federated.python.core.impl.executors import cardinality_carrying_base
 from tensorflow_federated.python.core.impl.executors import executor_base
 from tensorflow_federated.python.core.impl.executors import executor_value_base
@@ -88,7 +88,7 @@ class PrefetchingDataSourceIterator(tff_data_source.FederatedDataSourceIterator
       num_rounds_to_prefetch: int,
       num_clients_to_prefetch: Optional[int],
       # TODO(b/193543632): C++ execution is not fully supported in OSS.
-      context: async_execution_context.AsyncExecutionContext,
+      context: execution_context.AsyncExecutionContext,
       buffer_size: int = 0,
   ):
     """Constructs this data source iterator.
@@ -216,7 +216,7 @@ class PrefetchingDataSource(tff_data_source.FederatedDataSource):
                total_rounds: int,
                num_rounds_to_prefetch: int,
                num_clients_to_prefetch: int,
-               context: async_execution_context.AsyncExecutionContext,
+               context: execution_context.AsyncExecutionContext,
                buffer_size: int = 0):
     """Constructs this data source.
 
@@ -234,8 +234,7 @@ class PrefetchingDataSource(tff_data_source.FederatedDataSource):
     Raises:
       ValueError: If the argument values are outside the supported range.
     """
-    py_typecheck.check_type(context,
-                            async_execution_context.AsyncExecutionContext)
+    py_typecheck.check_type(context, execution_context.AsyncExecutionContext)
     py_typecheck.check_type(data_source, tff_data_source.FederatedDataSource)
     if num_clients_to_prefetch < 1:
       raise ValueError(

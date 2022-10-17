@@ -13,25 +13,34 @@
 # limitations under the License.
 """A context for execution based on an embedded executor instance."""
 
+from typing import Any, Callable, Optional
+
 from tensorflow_federated.python.common_libs import async_utils
-from tensorflow_federated.python.core.impl.context_stack import context_base
+from tensorflow_federated.python.core.impl.computation import computation_base
 from tensorflow_federated.python.core.impl.execution_contexts import cpp_async_execution_context
+from tensorflow_federated.python.core.impl.execution_contexts import execution_context
 from tensorflow_federated.python.core.impl.executors import cardinalities_utils
+from tensorflow_federated.python.core.impl.executors import executor_factory as executor_factory_lib
 
 
-class SyncSerializeAndExecuteCPPContext(context_base.SyncContext):
+class SyncSerializeAndExecuteCPPContext(execution_context.SyncExecutionContext):
   """A synchronous execution context delegating to CPP Executor bindings."""
 
   def __init__(
       self,
-      factory,
-      compiler_fn,
+      factory: executor_factory_lib.ExecutorFactory,
+      compiler_fn: Optional[Callable[[computation_base.Computation],
+                                     Any]] = None,
       *,
       cardinality_inference_fn: cardinalities_utils
       .CardinalityInferenceFnType = cardinalities_utils.infer_cardinalities):
     self._async_execution_context = cpp_async_execution_context.AsyncSerializeAndExecuteCPPContext(
         factory, compiler_fn, cardinality_inference_fn=cardinality_inference_fn)
     self._async_runner = async_utils.AsyncThreadRunner()
+
+  @property
+  def executor_factory(self) -> executor_factory_lib.ExecutorFactory:
+    return self._async_execution_context.executor_factory
 
   def invoke(self, comp, arg):
     return self._async_runner.run_coro_and_return_result(

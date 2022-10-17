@@ -18,24 +18,22 @@
 # information.
 """A context for execution based on an embedded executor instance."""
 
-from typing import Any
-from typing import Callable
-from typing import Optional
+from typing import Any, Callable, Optional
+
 from tensorflow_federated.python.common_libs import async_utils
-from tensorflow_federated.python.common_libs import py_typecheck
 from tensorflow_federated.python.core.impl.computation import computation_base
-from tensorflow_federated.python.core.impl.context_stack import context_base
 from tensorflow_federated.python.core.impl.execution_contexts import async_execution_context
+from tensorflow_federated.python.core.impl.execution_contexts import execution_context
 from tensorflow_federated.python.core.impl.executors import cardinalities_utils
-from tensorflow_federated.python.core.impl.executors import executor_factory
+from tensorflow_federated.python.core.impl.executors import executor_factory as executor_factory_lib
 
 
-class ExecutionContext(context_base.SyncContext):
+class ExecutionContext(execution_context.SyncExecutionContext):
   """A synchronous execution context backed by an `executor_base.Executor`."""
 
   def __init__(
       self,
-      executor_fn: executor_factory.ExecutorFactory,
+      executor_fn: executor_factory_lib.ExecutorFactory,
       compiler_fn: Optional[Callable[[computation_base.Computation],
                                      Any]] = None,
       *,
@@ -51,8 +49,6 @@ class ExecutionContext(context_base.SyncContext):
         returned by this function will be passed to the `create_executor` method
         of `executor_fn` to construct a `tff.framework.Executor` instance.
     """
-    py_typecheck.check_type(executor_fn, executor_factory.ExecutorFactory)
-    self._executor_factory = executor_fn
     self._async_context = async_execution_context.AsyncExecutionContext(
         executor_fn=executor_fn,
         compiler_fn=compiler_fn,
@@ -60,8 +56,8 @@ class ExecutionContext(context_base.SyncContext):
     self._async_runner = async_utils.AsyncThreadRunner()
 
   @property
-  def executor_factory(self):
-    return self._executor_factory
+  def executor_factory(self) -> executor_factory_lib.ExecutorFactory:
+    return self._async_context.executor_factory
 
   def invoke(self, comp, arg):
     return self._async_runner.run_coro_and_return_result(

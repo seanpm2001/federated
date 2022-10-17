@@ -18,20 +18,22 @@ import concurrent
 import contextlib
 import pprint
 import textwrap
-from typing import Set
+from typing import Any, Callable, Optional
 
 from absl import logging
 
 from pybind11_abseil import status as absl_status
 from tensorflow_federated.python.common_libs import retrying
-from tensorflow_federated.python.core.impl.context_stack import context_base
+from tensorflow_federated.python.core.impl.computation import computation_base
 from tensorflow_federated.python.core.impl.execution_contexts import compiler_pipeline
+from tensorflow_federated.python.core.impl.execution_contexts import execution_context
 from tensorflow_federated.python.core.impl.executors import cardinalities_utils
+from tensorflow_federated.python.core.impl.executors import executor_factory as executor_factory_lib
 from tensorflow_federated.python.core.impl.executors import value_serialization
 from tensorflow_federated.python.core.impl.types import type_conversions
 
 
-def get_absl_retryable_error_codes() -> Set[absl_status.StatusCode]:
+def get_absl_retryable_error_codes() -> set[absl_status.StatusCode]:
   """Returns Absl retryable error codes."""
   # TODO(b/237122326): Move this function into executors_errors when
   # absl_status works in OSS.
@@ -48,23 +50,30 @@ def _is_retryable_absl_status(exception):
           exception.status.code() in get_absl_retryable_error_codes())
 
 
-class AsyncSerializeAndExecuteCPPContext(context_base.AsyncContext):
+class AsyncSerializeAndExecuteCPPContext(execution_context.AsyncExecutionContext
+                                        ):
   """An async execution context delegating to CPP Executor bindings."""
 
   def __init__(
       self,
-      factory,
-      compiler_fn,
+      factory: executor_factory_lib.ExecutorFactory,
+      compiler_fn: Optional[Callable[[computation_base.Computation],
+                                     Any]] = None,
       max_workers=None,
       *,
       cardinality_inference_fn: cardinalities_utils
       .CardinalityInferenceFnType = cardinalities_utils.infer_cardinalities):
     super().__init__()
+
     self._executor_factory = factory
     self._compiler_pipeline = compiler_pipeline.CompilerPipeline(compiler_fn)
     self._futures_executor_pool = concurrent.futures.ThreadPoolExecutor(
         max_workers=max_workers)
     self._cardinality_inference_fn = cardinality_inference_fn
+
+  @property
+  def executor_factory(self) -> executor_factory_lib.ExecutorFactory:
+    return self._executor_factory
 
   @contextlib.contextmanager
   def _reset_factory_on_error(self, ex_factory, cardinalities):
