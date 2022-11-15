@@ -18,6 +18,8 @@
 # information.
 """A local proxy for a remote executor service hosted on a separate machine."""
 
+import asyncio
+
 from collections.abc import Mapping
 import weakref
 
@@ -88,7 +90,8 @@ class RemoteExecutor(executor_base.Executor):
   def __init__(self,
                stub: remote_executor_stub.RemoteExecutorStub,
                thread_pool_executor=None,
-               dispose_batch_size=20):
+               dispose_batch_size=20,
+               stream_structs: bool = False):
     """Creates a remote executor.
 
     Args:
@@ -101,6 +104,8 @@ class RemoteExecutor(executor_base.Executor):
         worker values. Lower values will result in more requests to the remote
         worker, but will result in values being cleaned up sooner and therefore
         may result in lower memory usage on the remote worker.
+      stream_structs: The flag to enable decomposing and streaming struct
+        values.
     """
 
     py_typecheck.check_type(dispose_batch_size, int)
@@ -113,6 +118,7 @@ class RemoteExecutor(executor_base.Executor):
     self._executor_id = None
     self._dispose_request = None
     self._dispose_batch_size = dispose_batch_size
+    self._stream_structs = stream_structs
 
   def close(self):
     logging.debug('Clearing executor state on server.')
@@ -169,12 +175,38 @@ class RemoteExecutor(executor_base.Executor):
     return
 
   @tracing.trace(span=True)
+  async def create_value_stream_structs(self, value, type_spec=None):
+    type_spec.check_struct()
+    v_elems = structure.to_elements(value)
+    t_elems = structure.to_elements(type_spec)
+    if len(v_elems) != len(t_elems):
+      raise TypeError(
+          'Value {} does not match type {}: mismatching tuple length.'.format(
+              value, type_spec))
+
+    for ((vk, _), (tk, _)) in zip(v_elems, t_elems):
+      if vk not in [tk, None]:
+        raise TypeError(
+            'Value {} does not match type {}: mismatching tuple element '
+            'names {} vs. {}.'.format(value, type_spec, vk, tk))
+
+    value_refs = []
+    for (_, v_elem), (_, t_elem) in zip(v_elems, t_elems):
+      value_refs.append(self.create_value(v_elem, t_elem))
+    value_refs = await asyncio.gather(*value_refs)
+    return await self.create_struct(value_refs)
+
+  @tracing.trace(span=True)
   async def create_value(self, value, type_spec=None):
     self._check_has_executor_id()
 
     @tracing.trace
     def serialize_value():
       return value_serialization.serialize_value(value, type_spec)
+
+    if self._stream_structs and type_spec is not None and isinstance(
+        type_spec, computation_types.StructType):
+      return await self.create_value_stream_structs(value, type_spec)
 
     value_proto, type_spec = serialize_value()
     create_value_request = executor_pb2.CreateValueRequest(
@@ -231,9 +263,34 @@ class RemoteExecutor(executor_base.Executor):
     return RemoteValue(response.value_ref, result_type, self)
 
   @tracing.trace(span=True)
+  async def _compute_stream_structs(self, value_ref, type_spec):
+    py_typecheck.check_type(value_ref, executor_pb2.ValueRef)
+    type_spec.check_struct()
+    values = []
+    source = RemoteValue(value_ref, type_spec, self)
+
+    async def per_element(source, index, element_spec):
+      select_response = await self.create_selection(source, index)
+      value = await self._compute(select_response.value_ref, element_spec)
+      return value
+
+    for index, (_, element_spec) in enumerate(structure.to_elements(type_spec)):
+      values.append(per_element(source, index, element_spec))
+
+    values = await asyncio.gather(*values)
+    structure.name_list_with_nones(type_spec)
+    return structure.Struct(
+        zip(structure.name_list_with_nones(type_spec), values))
+
+  @tracing.trace(span=True)
   async def _compute(self, value_ref, type_spec):
     self._check_has_executor_id()
     py_typecheck.check_type(value_ref, executor_pb2.ValueRef)
+
+    if self._stream_structs and type_spec is not None and isinstance(
+        type_spec, computation_types.StructType):
+      return await self._compute_stream_structs(value_ref, type_spec)
+
     request = executor_pb2.ComputeRequest(
         executor=self._executor_id, value_ref=value_ref)
     response = self._stub.compute(request)

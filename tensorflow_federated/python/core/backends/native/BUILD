@@ -138,6 +138,15 @@ py_library(
     srcs = ["execution_contexts.py"],
     data = ["//tensorflow_federated/data:worker_binary"],
     srcs_version = "PY3",
+    visibility = [
+        ":native_packages",
+        "//tensorflow_federated:__pkg__",
+        "//tensorflow_federated/python/core:core_users",
+        "//tensorflow_federated/python/core/backends/test:test_packages",
+        "//tensorflow_federated/python/core/impl/execution_contexts:__pkg__",
+        "//tensorflow_federated/python/core/impl/executors:__pkg__",
+        "//third_party/py/tensorflow_federated:__subpackages__",
+    ],
     deps = [
         ":compiler",
         ":mergeable_comp_compiler",

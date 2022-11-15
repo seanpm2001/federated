@@ -870,3 +870,14 @@ py_test(
         "@com_google_protobuf//:protobuf_python",
     ],
 )
+
+py_test(
+    name = "remote_executor_stream_structs_test",
+    srcs = ["remote_executor_stream_structs_test.py"],
+    deps = [
+        "//tensorflow_federated/python/common_libs:structure",
+        "//tensorflow_federated/python/core/backends/native:execution_contexts",
+        "//tensorflow_federated/python/core/impl/tensorflow_context:tensorflow_computation",
+        "//tensorflow_federated/python/core/impl/types:computation_types",
+    ],
+)
