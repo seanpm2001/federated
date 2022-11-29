@@ -33,7 +33,7 @@ from tensorflow_federated.python.core.impl.types import placements
 class CPPExecutionContextTest(tf.test.TestCase):
 
   def test_constructs_local_context(self):
-    context = cpp_execution_contexts.create_local_cpp_execution_context()
+    context = execution_contexts.create_localhost_cpp_execution_context()
     self.assertIsInstance(context, context_base.SyncContext)
 
   def test_constructs_remote_context(self):
@@ -52,7 +52,7 @@ class CPPExecutionContextTest(tf.test.TestCase):
     def identity(x):
       return x
 
-    context = cpp_execution_contexts.create_local_cpp_execution_context()
+    context = execution_contexts.create_localhost_cpp_execution_context()
     with get_context_stack.get_context_stack().install(context):
       odict = identity(collections.OrderedDict(a=0, b=1.))
 
@@ -65,7 +65,7 @@ class CPPExecutionContextTest(tf.test.TestCase):
     def multiply(ordered_dict):
       return ordered_dict['x'] * ordered_dict['y']
 
-    context = cpp_execution_contexts.create_local_cpp_execution_context()
+    context = execution_contexts.create_localhost_cpp_execution_context()
     with get_context_stack.get_context_stack().install(context):
       zero = multiply(collections.OrderedDict(x=0, y=1))
       one = multiply(collections.OrderedDict(x=1, y=1))
@@ -118,7 +118,7 @@ class CPPExecutionContextTest(tf.test.TestCase):
     def create_dataset():
       return tf.data.Dataset.range(5)
 
-    context = cpp_execution_contexts.create_local_cpp_execution_context()
+    context = execution_contexts.create_localhost_cpp_execution_context()
     with get_context_stack.get_context_stack().install(context):
       with self.subTest('unplaced'):
         dataset = create_dataset()
